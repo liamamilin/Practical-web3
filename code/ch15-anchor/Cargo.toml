@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "programs/*"
+]
+
+[resolver]
+addr = false
+
+# Anchor 1.2+ 要求：链上算术必须开启溢出检查（见第 11、15 章）
+[profile.release]
+overflow-checks = true

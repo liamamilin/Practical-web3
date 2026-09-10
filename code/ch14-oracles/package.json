@@ -1,0 +1,18 @@
+{
+  "name": "ch14-oracles",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Web3 基石第 14 章：本地 mock 预言机读喂价实验（MockPriceFeed + PriceConsumer）",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "drive": "node scripts/drive.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.56.3"
+  },
+  "devDependencies": {
+    "solc": "^0.8.36"
+  }
+}

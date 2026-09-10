@@ -1,0 +1,349 @@
+---
+title: "Solana"
+---
+
+## 本章要解决的问题
+
+你已经跟着第 9 到 12 章走完了以太坊的完整开发流程：写 Solidity、跑 forge test、把 ERC-20 接进前端。现在打开 Solana 的文档，准备"再学一条链"，却很快陷入一种熟悉的陌生：
+
+- 文档里到处是 "account"，但它的 account 和你在第 7 章学的账户（account）根本不是一个东西——它更像一个"文件"。
+- 一个代币程序（token program）里居然找不到任何用户的余额记录。那么你的 USDC 余额到底存在哪里？
+- 部署一个"合约"之后，官方文档告诉你它默认是**可以升级的**。第 11 章不是刚强调过"部署即定型"吗？
+- 交易结构里有一栏 "accounts"，要求你把这笔交易要碰的**所有**账户事先列出来。以太坊从没要求过这种事。
+
+这些困惑不是零散的知识点没记住，而是同一个根源的不同表现：**Solana 的状态模型和以太坊是两套根本不同的设计**。如果你带着以太坊的心智模型硬套过去，每一处都会别扭。
+
+本章的任务是把这套模型拆开讲清楚，然后——既然你是开发者路径的读者——亲手写一个完整的 Solana 链上程序，把它跑起来。
+
+## 本章位置
+
+本章是 Part 4 的第一章，全书从"以太坊单线叙事"切换到"多链视野"的第一站。
+
+前 14 章建立的心智模型里，有一部分是区块链的**通性**（账本、签名、共识、状态机），有一部分只是**以太坊的实现选择**（账户自带代码、storage 布局、串行执行、Solidity）。本章切换样本后，你会第一次有机会区分这两者——这是"视野层"真正的价值：看懂一条新链，靠的不是再学一遍文档，而是拿通性做坐标系，逐项对照它的实现选择。
+
+本章难度：◗（需要较强编程背景；本章正文开头的诚实声明与概念部分对所有读者开放）。
+
+## 核心理解
+
+先给出本章锚点，后面所有内容都是它的展开：
+
+> **以太坊是"账户自带逻辑"，Solana 是"逻辑存在程序里、数据存在账户里"——这是数据库表与对象的分野。**
+
+具体一点。在以太坊上（第 7 章），一个合约账户 = 代码 + 状态，两者物理上绑在同一个地址下。你的 ERC-20 余额就存在代币合约地址的 storage 里。这像**面向对象编程**：对象自带字段（状态）和方法（逻辑），`user.balance` 是对象自己身上的属性。
+
+在 Solana 上，世界只有一种东西：账户（account）。每个账户就是一个带字段的数据容器，而程序（program）是另一类特殊的、**只读的**账户——里面只有代码，没有任何自己的状态。程序要读写数据，必须把数据账户**作为参数传进来**。这像**关系数据库**：逻辑写在一段段存储过程里，数据放在一张张表里，存储过程每次执行都要显式声明"我要操作哪张表的哪几行"。
+
+| | 以太坊 | Solana |
+|---|---|---|
+| 状态存在哪 | 合约账户自己的 storage | 普通账户（数据账户）里 |
+| 逻辑存在哪 | 同一个合约账户的代码里 | 程序账户里，程序本身无状态 |
+| 代币余额存在哪 | 代币合约的 storage 中你的 slot | 一个由代币程序所拥有的代币账户（token account）里 |
+| 类比 | 面向对象：对象自带字段与方法 | 关系数据库：程序像存储过程，账户像表里的行 |
+| 调用合约时 | 指定合约地址 + calldata | 指定程序 + **列出所有要读写的账户** |
+
+这个分野不是审美差异，它直接推导出 Solana 最重要的特性——并行执行。因为交易必须提前声明自己的读写集，runtime 在执行前就知道哪些交易会互相冲突；不碰同一账户的交易可以同时跑。而以太坊的交易可以动态访问任意合约的任意 storage，所以 EVM 只能串行。
+
+我的理解是：**以太坊把"数据和逻辑绑在一起"换来了组合性的自然流畅（合约调用合约就像对象调对象），Solana 把"数据和逻辑拆开"换来了执行模型的并行潜力。** 两边都在为一件事付代价，没有免费的架构。
+
+## 机制与原理
+
+### 账户即容器
+
+Solana 上的一切状态都在账户里。一个账户就是一条记录，字段固定：
+
+| 字段 | 含义 | 对照以太坊 |
+|---|---|---|
+| lamports | 该账户持有的 SOL 余额（1 SOL = 10⁹ lamports） | 账户的 ETH 余额 |
+| data | 任意字节数组，状态就存这里 | 合约账户的 storage |
+| owner | 拥有该账户的**程序** | （以太坊无对应概念） |
+| executable | 是否为可执行程序 | 合约的 code 字段 |
+| rent_epoch | 租金相关（见下） | （以太坊无对应概念） |
+
+关键规则：
+
+1. **只有 owner 程序可以修改一个账户的 data**，也只有 owner 可以扣它的 lamports。这就是 Solana 的"权限边界"：数据账户被创建时，其所有权交给某个程序，此后只有这个程序能改它的内容。第 4 章讲的"检查谁有权改这笔状态"，在 Solana 里是 runtime 层面强制执行的。
+2. **存数据要交租金（rent）**。账户按其数据大小在链上占用的空间交"押金"——余额不低于两年租金即视为租金免除（rent-exempt），这个押金不是花费，余额转走、账户关闭时退还。所以 Solana 上"状态不是免费的"，只是计费方式与以太坊的 storage 写入 gas 不同。
+3. **程序也是账户**，只是 `executable = true`，data 是编译后的字节码。程序账户不可写状态——这就是"程序无状态"。
+
+### 程序无状态与 PDA
+
+既然程序没有自己的 storage，"属于程序的账"记在哪？答案：记在**程序所拥有的数据账户**里。最常见的模式是 PDA（Program Derived Address，程序派生地址）——一个没有对应私钥、由程序 ID + 种子（seed）确定性推导出的地址，程序（也只有它）能以 PDA 的身份签名和持有账户。
+
+类比第 7 章的模型：PDA 像是程序在数据库里开的表，seed 是查询键。本章的实验程序会用 `[b"counter", user_pubkey]` 作为种子，给每个用户开一个独立的计数器账户——不需要注册、不需要映射，地址本身就是索引。
+
+另一个必须适应的点：**Solana 程序默认可升级**。部署者持有 upgrade authority，可以随时替换程序代码。这与以太坊"部署即定型"的默认相反（以太坊的可变性要靠代理模式显式搭建，第 10 章讲过取舍）。评估一个 Solana 程序的信任假设时，"upgrade authority 是否已放弃"是一个必查项——方法论的思路与第 8 章的 Stage 框架一致：逐项核对信任假设，而不是听叙事。
+
+### 显式声明与 Sealevel 并行执行
+
+一笔 Solana 交易的核心字段是 message.account_keys：这笔交易要访问的**全部**账户列表，每个账户还标注了是只读还是可写、是否要签名。
+
+由此，Solana 的执行引擎 Sealevel 在打包区块时可以做的事是：把所有交易的读写集先算出来，**读写集不相交的交易并行执行**，相交的（比如都写同一个热门池子账户）仍然串行。截至 2026 年 9 月，这是主流高性能链采用的代表性设计；以太坊的 EVM 及其 L2（第 8 章）默认串行执行，社区正在探索的并行化方案本质上也要求类似的"预声明读写集"。
+
+对开发者的直接影响是：**账户冲突是真实的性能与失败来源**。同一秒内大量交易争写同一个账户时，一部分交易会失败或需要加 priority fee 重试——你在以太坊上熟悉的"gas 竞价"，在 Solana 上变成了"计算单元（CU，compute unit）竞价"。
+
+### PoH：先排好时间，再谈共识
+
+第 6 章的框架里，共识回答"互不信任的节点如何对当下的账达成一致"。Solana 在 BFT 族共识之外加了一个独特组件：PoH（Proof of History，历史证明）。
+
+机制直觉：网络中由当前领导者（leader）持续做哈希运算——每一步的输入是上一步的哈希输出。因为哈希只能顺序计算，这条哈希链本身就是一段**可验证的时间流逝证明**：第 N 个事件发生在第 N+k 个事件之前，任何人都可复算验证，不需要逐笔等全网对时。
+
+对开发者的实际影响（数据为量级描述，截至 2026 年 9 月）：
+
+- **出块时间约 400ms**（一个 slot），远快于以太坊主网的 12 秒 slot。用户感知层面"确认"来得非常快。
+- 但"快"不等于"终局"。第 6 章的原则在这里同样成立：乐观确认与最终确认（full commitment / finalized）是不同强度的承诺，写对资金敏感的逻辑时要区分对待。
+- 快出块 + 串行化冲突 + CU 竞价，共同决定了 Solana 应用的错误处理和重试策略与以太坊不同——不能把"等 2 个确认"的经验直接搬过来。
+
+五问过一遍 PoH：它是什么（一条可复算的哈希时间链）；为什么必须存在（让 leader 在排序交易时自带时间戳，减少共识消息量，支撑高频出块）；怎么用（开发者通常不直接接触，感知为"快出块与快速确认"）；何时不适用（它不替代 BFT 投票，安全性仍来自质押与罚没机制）；边界（PoH 本身不是共识，是共识的时钟附件——把它当成"另一种 PoW"是常见误读）。
+
+## 动手实验：从零写一个完整的 Solana 程序
+
+本实验目标：用 Rust + Anchor 框架写一个链上计数器程序——初始化、递增、权限校验齐全——在本地 validator 上完成测试与部署，并用 TypeScript 客户端调用它。全程本地（solana-test-validator），零真实资金。
+
+**诚实声明：本章全部命令、代码与预期输出已在本地实机验证**（macOS + Anchor CLI 1.2.0 / anchor-lang 1.2.0 / @coral-xyz/anchor 0.32.1 / platform-tools v1.57，截至 2026 年 9 月）：`anchor build` 完成 SBF 编译、测试套件 3/3 通过、本地链部署成功、独立 TypeScript 客户端完成"空投 → 初始化 → 递增三次 → 链上读回 count=3"全流程。Anchor 迭代较快，遇到不一致时以官方文档为准；因此本节的容错说明写得比其他章更细。
+
+### 第一步：安装工具链（含排错）
+
+本实验需要三样东西：Rust 工具链（含 cargo）、Solana CLI（Agave，Anza 维护）、Anchor 框架。完整可运行项目在 `code/ch15-anchor/`，建议先读 README 再回来跟流程。
+
+**1. 安装 Rust（macOS / Linux）：**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo --version
+# 预期输出类似：cargo 1.8x.x (xxxxxxx 2026-xx-xx)
+```
+
+排错：
+- macOS 若报缺少编译工具，先安装 Xcode Command Line Tools：`xcode-select --install`。
+- Linux 上缺构建依赖时安装 `build-essential`、`pkg-config`、`libssl-dev`、`libudev-dev`（Debian/Ubuntu 系）。
+
+**2. 安装 Solana CLI（Anza 发行版）：**
+
+```bash
+sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+```
+
+安装脚本会把二进制放到 `~/.local/share/solana/install/active_release/bin`，并把 PATH 追加到你的 shell 配置文件。若当前终端不认识命令，手动 source 一次：
+
+```bash
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+solana --version
+# 预期输出类似：solana-cli 2.x.x (src:xxxx; feat:xxxx)
+```
+
+排错：
+- 下载超时或被墙：脚本支持 `--url` 指定镜像源，或到 Anza 的 GitHub Releases 页面手动下载对应平台压缩包，解压后把目录加入 PATH，效果相同。
+- Apple Silicon 与 Intel Mac 的安装包不同，脚本会自动选择；手动下载时注意区分（aarch64 / x86_64）。
+
+**3. 安装 Anchor。** 推荐用版本管理器 avm：
+
+```bash
+cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+avm install latest
+avm use latest
+anchor --version
+# 预期输出类似：anchor-cli 0.3x.x
+```
+
+排错：
+- `cargo install avm` 编译时间较长（数分钟到十几分钟），内存不足的机器可能失败，关闭其他大型程序后重试。
+- 不想用 avm 也可以直接 `cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked`，效果一样，只是切换版本麻烦些。
+- Anchor 依赖 yarn：没有的话 `npm install -g yarn`。
+- 版本提示：Anchor 迭代较快，本项目基于 Anchor CLI 1.2.0 / anchor-lang 1.2.0 验证通过（2026 年 9 月）。注意 JS 客户端包 `@coral-xyz/anchor` 的版本号（0.32.x）与 CLI 版本号（1.x）不同步——这是生态现实，认准官方文档的版本对应表即可。如果新版脚手架与下文有出入，以实际输出为准，只把核心程序代码与测试逻辑迁移过去。
+
+**4. 生成本地钱包并确认 validator 可用：**
+
+```bash
+solana-keygen new          # 生成 ~/.config/solana/id.json，会要求设置密码，可直接回车留空
+solana config set --url localhost
+solana address             # 打印你的本地地址
+```
+
+### 第二步：理解程序代码
+
+用 `anchor init ch15-anchor` 可以生成脚手架；随书项目 `code/ch15-anchor/` 已包含完整结构，核心程序代码在 `programs/ch15-anchor/src/lib.rs`：
+
+```rust
+use anchor_lang::prelude::*;
+
+declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"); // 示例占位，见下方"程序 ID"
+
+#[program]
+pub mod ch15_anchor {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let counter = &mut ctx.accounts.counter;
+        counter.authority = ctx.accounts.user.key();
+        counter.count = 0;
+        Ok(())
+    }
+
+    pub fn increment(ctx: Context<Increment>) -> Result<()> {
+        let counter = &mut ctx.accounts.counter;
+        counter.count = counter
+            .count
+            .checked_add(1)
+            .ok_or(error!(ErrorCode::Overflow))?;
+        Ok(())
+    }
+}
+
+// 数据结构：这就是存在"数据账户"里的状态
+#[account]
+#[derive(InitSpace)]
+pub struct Counter {
+    pub authority: Pubkey, // 谁有权递增
+    pub count: u64,
+}
+
+// 账户上下文：声明"这次调用要碰哪些账户"，runtime 据此做权限校验
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(
+        init, payer = user, space = 8 + Counter::INIT_SPACE,
+        seeds = [b"counter", user.key().as_ref()], bump
+    )]  // seeds+bump：计数器地址由种子确定性派生（PDA），每个用户一个
+    pub counter: Account<'info, Counter>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Increment<'info> {
+    #[account(mut, has_one = authority)]
+    pub counter: Account<'info, Counter>,
+    pub authority: Signer<'info>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("count would overflow u64")]
+    Overflow,
+}
+```
+
+逐段对照本章前文的模型来读：
+
+- **程序无状态**：`#[program]` 模块里只有函数，没有任何全局变量。所有状态都在 `Counter` 结构体里，它会被序列化进数据账户。
+- **账户即容器**：`#[account]` 标注的类型是"存在账户 data 里的结构"的声明。`init, payer = user, space = ...` 表示：首次调用时由系统程序创建这个账户、由 `user` 支付租金押金、按 `Counter` 大小分配空间——回忆前文的 rent 机制，这里就是它在代码里的样子。
+- **PDA**：测试里我们用 `[b"counter", user_pubkey]` 作为种子派生 `counter` 账户地址。每个用户一个独立账户，地址即索引。
+- **权限校验**：`Signer<'info>` 要求该账户必须对这笔交易签名；`has_one = authority` 让 runtime 检查传入的 `counter.authority` 与签名的 `authority` 一致——别人拿你的计数器来递增，直接失败。对照第 11 章：这类校验在 Solidity 里要手写 `require`，在 Anchor 里是声明式的。
+- **算术安全**：`checked_add` 溢出时报错而不是回绕。Rust 默认行为在 release 下溢出即 panic，Anchor 程序里统一用 checked 系列是纪律，这一点与 Solidity 0.8+ 自带溢出检查殊途同归。
+
+注意 `declare_id!` 里的程序 ID 是**占位符**，每个人生成的都不同，需要换成自己的（见下一步）。
+
+### 第三步：构建、测试、部署
+
+```bash
+cd code/ch15-anchor
+
+# 1. 首次构建
+anchor build
+# 预期输出：编译若干 crate，最后在 target/deploy/ 下生成 ch15_anchor.so
+```
+
+构建成功后，取出你的程序 ID 并替换占位符：
+
+```bash
+anchor keys list
+# 预期输出：ch15_anchor: <你的程序ID，一串 base58>
+```
+
+把 `<你的程序ID>` 填进 `programs/ch15-anchor/src/lib.rs` 的 `declare_id!`，再 `anchor build` 一次。**这一步漏掉是新手最常见的构建/部署报错来源。**
+
+```bash
+# 2. 测试（自动完成：启动本地 validator → 部署程序 → 跑 TypeScript 测试 → 关闭 validator）
+anchor test
+# 预期输出关键行：
+#   ✔ initialize counter (xxms)
+#   ✔ increment twice (xxms)
+#   ✔ rejects unauthorized increment (xxms)
+#   3 passing
+```
+
+`anchor test` 做了三件事：后台启动 `solana-test-validator`、把 `.so` 部署上去、运行 `tests/` 目录下的 mocha 测试。测试代码 `tests/ch15-anchor.ts` 的关键片段：
+
+```typescript
+// 派生 PDA：与合约端约定同一种子
+const [counterPda] = PublicKey.findProgramAddressSync(
+  [Buffer.from("counter"), provider.wallet.publicKey.toBuffer()],
+  program.programId,
+);
+
+// 初始化（accountsStrict：显式列出全部账户，不依赖自动解析）
+await program.methods
+  .initialize()
+  .accountsStrict({
+    counter: counterPda,
+    user: provider.wallet.publicKey,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .rpc();
+
+// 读取链上状态——注意：读的是"数据账户"，不是程序
+const counter = await program.account.counter.fetch(counterPda);
+expect(counter.count.toNumber()).to.equal(0);
+```
+
+这就是"逻辑存在程序里、数据存在账户里"在客户端的样子：调用方法时列出账户，读状态时 fetch 数据账户。
+
+```bash
+# 3. 手动部署流程（体会 anchor test 背后发生了什么）
+solana-test-validator --reset          # 终端 1：起本地链
+anchor deploy                          # 终端 2：部署程序
+solana program show <你的程序ID>       # 预期输出：Program Id / Owner: BPFLoaderUpgradeab1e... / 数据长度等
+```
+
+注意 `solana program show` 的 Owner 是 BPF 升级加载器——再次印证：程序是一个特殊的账户，由加载程序管理，且默认**可升级**。可以用 `solana program show --upgradeable` 看到它的 upgrade authority。
+
+**4. TypeScript 客户端调用（独立于测试的完整脚本）：**
+
+```bash
+yarn client
+# 预期输出：
+#   Counter initialized at: <PDA 地址>
+#   count after 3 increments: 3
+#   done.
+```
+
+脚本在 `client/index.ts`：自建 keypair、空投本地 SOL、初始化、连续递增三次、读回状态。对比第 12 章 DApp 前端的结构会发现角色一一对应——`@coral-xyz/anchor` 之于 Anchor 程序，正如 viem/wagmi 之于 Solidity 合约。
+
+**5.（可选）devnet 部署**：`solana config set --url devnet` 后用 `solana airdrop` 领测试币再 `anchor deploy`。faucet 经常限流或失效，替代方案：Solana 官方 web faucet、或干脆留在 localnet——本实验的全部学习目标在本地即可完成，devnet 只是验证"流程在真实网络上同样成立"。
+
+## 常见误区或边界
+
+**误区一：用"以太坊账户"的心智理解 Solana 账户。**
+本章已反复展开。最实用的自检问题："这个程序的状态存在哪个账户里？这个账户的 owner 是谁？"在以太坊上这个问题不存在，在 Solana 上它是分析任何程序的第一问。
+
+**误区二："合约不可变"的经验直接搬过来。**
+Solana 程序默认可升级。看到"部署了程序"不等于"逻辑从此固定"。评估程序信任假设时把 upgrade authority 当作第 11 章"权限失控"检查项的同构物来审。
+
+**误区三：并行执行 = 一切都快。**
+并行只在读写集不相交时成立。热点账户（被高频交易争写的同一个池子、同一个全局配置）仍是串行瓶颈，CU 竞价和交易失败都发生在这里。架构选择换来了并行潜力，没有消除争用本身。
+
+**误区四：Anchor 就是 Solana。**
+Anchor 是构建在 Rust 之上的开发框架（类似 Solidity 之于 EVM 的角色类比，但不完全对应）。底层执行环境是 SVM（Solana Virtual Machine，Solana 虚拟机）与 eBPF 字节码，用原生 Rust 不经 Anchor 写程序也完全可行，只是账户校验等样板代码要手写。本书选 Anchor 是为了把篇幅花在模型上而非样板代码上。
+
+**边界**：本章不覆盖 SPL 代币标准（Solana 的 ERC-20 对应物）与 NFT 标准细节，不讲 validator 运维、质押经济与 MEV，不深入 SVM 字节码。PoH 与共识只讲到"对开发者有影响"为止，协议内部（第 6 章的剪刀原则在这里同样适用）不展开。
+
+## 本章产物
+
+读完并完成实验，你应该拥有：
+
+1. **一个锚点**："以太坊是账户自带逻辑，Solana 是逻辑存在程序里、数据存在账户里"——以及它推导出的全部差异（显式账户声明、PDA、可升级默认、rent、CU 竞价）。
+2. **一张对照表**：本章"核心理解"中的以太坊 vs Solana 心智模型表。
+3. **一个完整项目**：`code/ch15-anchor/` —— Anchor 计数器程序（含权限校验与溢出保护）+ 3 个测试 + 独立 TypeScript 客户端，本地 validator 全流程跑通。
+4. **一份环境排错记录**：安装三件套时遇到的问题与解法（这部分只属于你自己，但下次换机器时它最值钱）。
+
+## 本章在体系中的位置
+
+本章完成的是"执行模型"层面的另起炉灶：Solana 换掉了以太坊的执行与状态架构，换来并行潜力，但**语言层面**它用的仍是 Rust——一个通用系统语言，类型系统里并没有"资产"这个概念。你完全可以用 Rust 写出"把余额复制了一份"这种第 11 章反复出现的事故根源，编译器一声不吭。
+
+下一章 Move 系从另一个维度下手：**在类型系统层面把"资产"变成一等公民**，让编译器替你挡住一类 EVM 和 Rust 里只能靠纪律挡住的错误。看完那一章，再回头看本章的三模型对照需求，全书"多链视野"的地图就完整了。
+
+## 边界重申
+
+本章的目标是建立 Solana 编程模型的坐标系并跑通第一个程序，不是让你成为 Rust 工程师——所有 Rust 语法点到为止，实验代码里每一行都有注释解释"为什么"，但语言特性本身需要另行学习。本章全部命令与预期输出已在本地实机验证（详见本章开头的诚实声明）。本章不比较任何链或生态的"前景"，不做任何涉及投资价值的陈述；"Solana 快"这类描述均为机制层面的量级陈述，不构成使用或投入建议。

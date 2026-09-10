@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+# 本目录不重新实现 ERC-20：编译目标就是第 10 章手写的 MyToken（跨目录相对引用）
+# 好处：第 12 章前端永远对齐第 10 章的"唯一实现"，不存在两份会漂移的副本
+auto_detect_solc = true

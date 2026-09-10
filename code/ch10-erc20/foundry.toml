@@ -1,0 +1,10 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+# 本书锚定 Solidity 0.8.x；使用 0.8.24+ 以获得命名映射参数（0.8.18+）与 custom errors（0.8.4+）
+# 本机未验证：forge 会依据 pragma 自动匹配已安装/可下载的编译器版本
+auto_detect_solc = true
+
+[fmt]
+line_length = 100

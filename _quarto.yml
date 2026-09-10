@@ -1,0 +1,60 @@
+project:
+  type: book
+
+book:
+  title: "Web3 基石"
+  subtitle: "从认知到构建"
+  author: "milin"
+  date: today
+  chapters:
+    - index.qmd
+    - part1.qmd
+    - chapter-01-trust-problem.qmd
+    - chapter-02-wallets-keys.qmd
+    - chapter-03-first-transaction.qmd
+    - chapter-04-risks-scams.qmd
+    - part2.qmd
+    - chapter-05-data-structures.qmd
+    - chapter-06-consensus.qmd
+    - chapter-07-accounts-evm.qmd
+    - chapter-08-layer2.qmd
+    - part3.qmd
+    - chapter-09-dev-env.qmd
+    - chapter-10-solidity.qmd
+    - chapter-11-security.qmd
+    - chapter-12-dapp-fullstack.qmd
+    - chapter-13-account-abstraction.qmd
+    - chapter-14-oracles-bridges.qmd
+    - part4.qmd
+    - chapter-15-solana.qmd
+    - chapter-16-move.qmd
+    - chapter-17-defi.qmd
+    - chapter-18-capstone.qmd
+    - references.qmd
+  search: true
+  page-navigation: true
+  reader-mode: true
+
+bibliography: references.bib
+
+format:
+  html:
+    theme:
+      light: cosmo
+      dark: darkly
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-copy: true
+    code-overflow: wrap
+    smooth-scroll: true
+    anchor-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+  pdf:
+    documentclass: scrreprt
+    toc: true
+    number-sections: true
+    colorlinks: true
+
+editor: visual

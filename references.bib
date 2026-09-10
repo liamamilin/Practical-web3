@@ -1,0 +1,177 @@
+# 参考文献与延伸来源
+#
+# 引用策略（见 book-principles.md 第 7 节）：只收录白皮书、EIP、官方文档与
+# 链上数据平台（如 L2Beat）；不收录行情媒体与 KOL 观点。
+# 本文件按主题分组，供读者按图索骥；条目均为第一手来源。
+
+# ---------- 奠基文献 ----------
+
+@misc{nakamoto2008bitcoin,
+  author       = {Nakamoto, Satoshi},
+  title        = {Bitcoin: A Peer-to-Peer Electronic Cash System},
+  year         = {2008},
+  howpublished = {\url{https://bitcoin.org/bitcoin.pdf}},
+  note         = {PoW 共识与链式结构的原始出处}
+}
+
+@misc{buterin2014ethereum,
+  author       = {Buterin, Vitalik},
+  title        = {Ethereum Whitepaper: A Next-Generation Smart Contract and Decentralized Application Platform},
+  year         = {2014},
+  howpublished = {\url{https://ethereum.org/en/whitepaper/}},
+  note         = {智能合约平台的奠基文献}
+}
+
+@misc{wood2014yellowpaper,
+  author       = {Wood, Gavin},
+  title        = {Ethereum: A Secure Decentralised Generalised Transaction Ledger},
+  year         = {2014},
+  howpublished = {\url{https://ethereum.github.io/yellowpaper/paper.pdf}},
+  note         = {以太坊黄皮书：交易、账户与 EVM 的形式化定义}
+}
+
+@misc{szabo1997formalizing,
+  author  = {Szabo, Nick},
+  title   = {Formalizing and Securing Relationships on Public Networks},
+  journal = {First Monday},
+  volume  = {2},
+  number  = {9},
+  year    = {1997},
+  url     = {https://firstmonday.org/ojs/index.php/fm/article/view/548},
+  note    = {智能合约概念的最早系统表述}
+}
+
+# ---------- 核心标准（EIP / ERC） ----------
+
+@misc{eip20,
+  author       = {Vogelsteller, Fabian and Buterin, Vitalik},
+  title        = {{EIP-20}: Token Standard},
+  year         = {2015},
+  howpublished = {\url{https://eips.ethereum.org/EIPS/eip-20}},
+  note         = {ERC-20 原文，含 approve 竞态的官方警示}
+}
+
+@misc{eip721,
+  author       = {Entriken, William and Shirley, Dieter and Evans, Brad and Sachs, Nastassia},
+  title        = {{EIP-721}: Non-Fungible Token Standard},
+  year         = {2018},
+  howpublished = {\url{https://eips.ethereum.org/EIPS/eip-721}},
+  note         = {ERC-721 与 onERC721Received 回调设计}
+}
+
+@misc{eip1559,
+  author       = {Buterin, Vitalik and Stark, Nicholas and Hines, Matthew and Robinson, Dan},
+  title        = {{EIP-1559}: Fee market change for ETH 1.0 chain},
+  year         = {2019},
+  howpublished = {\url{https://eips.ethereum.org/EIPS/eip-1559}},
+  note         = {基础费+小费的费率机制}
+}
+
+@misc{eip4337,
+  author       = {Buterin, Vitalik and Riedel, Michael and van Wijden, Sam and Albrecht, Dror and others},
+  title        = {{ERC-4337}: Account Abstraction Using Alt Mempool},
+  year         = {2021},
+  howpublished = {\url{https://eips.ethereum.org/EIPS/eip-4337}},
+  note         = {账户抽象标准：UserOperation、Bundler、Paymaster、EntryPoint}
+}
+
+@misc{bip39,
+  author       = {Palatinus, Marek and Rusnak, Pavol and Voisine, Alekos and Bowe, Sean},
+  title        = {{BIP-39}: Mnemonic code for generating deterministic keys},
+  year         = {2013},
+  howpublished = {\url{https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki}},
+  note         = {助记词标准，与 BIP-32/44 配套}
+}
+
+@misc{eip4844,
+  author       = {Buterin, Vitalik and others},
+  title        = {{EIP-4844}: Shard Blob Transactions},
+  year         = {2022},
+  howpublished = {\url{https://eips.ethereum.org/EIPS/eip-4844}},
+  note         = {blob 交易：L2 数据可用性的成本革命}
+}
+
+# ---------- 共识与协议设计 ----------
+
+@misc{gasperpaper,
+  author       = {Buterin, Vitalik and Griffith, Virgil},
+  title        = {Casper the Friendly Finality Gadget},
+  year         = {2017},
+  howpublished = {\url{https://arxiv.org/abs/1710.09437}},
+  note         = {以太坊 PoS 终局性层（Casper FFG）的设计论文}
+}
+
+@misc{yakovenko2018solana,
+  author       = {Yakovenko, Anatoly},
+  title        = {Solana: A new architecture for a high performance blockchain},
+  year         = {2018},
+  howpublished = {\url{https://solana.com/solana-whitepaper.pdf}},
+  note         = {PoH（历史证明）与并行执行的原始设计}
+}
+
+@misc{ammuniswap,
+  author       = {Adams, Hayden and Zinsmeister, Noah and Salem, River and others},
+  title        = {Uniswap v3 Core Whitepaper},
+  year         = {2021},
+  howpublished = {\url{https://uniswap.org/whitepaper-v3.pdf}},
+  note         = {AMM 数学与集中流动性的第一手资料；无常损失推导见其附录}
+}
+
+# ---------- 扩容与安全 ----------
+
+@misc{optimismrollup,
+  author       = {{Optimism Collective}},
+  title        = {Optimistic Rollup 规范（OP Stack Specification）},
+  year         = {2026},
+  howpublished = {\url{https://specs.optimism.io/}},
+  note         = {Optimistic Rollup 的一手规范，截至 2026-09 持续更新}
+}
+
+@misc{l2beatstages,
+  author       = {{L2BEAT}},
+  title        = {L2BEAT: The state of the layer two ecosystem},
+  year         = {2026},
+  howpublished = {\url{https://l2beat.com}},
+  note         = {Stage 框架（Stage 0/1/2）与各 L2 信任假设的独立评估，本书第 8 章方法论来源}
+}
+
+@misc{soliditydocs,
+  author       = {{Solidity Team}},
+  title        = {Solidity Documentation (Security Considerations)},
+  year         = {2026},
+  howpublished = {\url{https://docs.soliditylang.org/en/latest/security-considerations.html}},
+  note         = {语言官方的安全章节，截至 2026-09 持续更新}
+}
+
+@misc{swcregistry,
+  author       = {{Smart Contract Security Alliance}},
+  title        = {Smart Contract Weakness Classification and Test Cases (SWC)},
+  howpublished = {\url{https://swcregistry.io/}},
+  note         = {合约漏洞的系统性分类法}
+}
+
+# ---------- 官方文档（工具链） ----------
+
+@misc{foundrybook,
+  author       = {{Foundry}},
+  title        = {Foundry Book},
+  year         = {2026},
+  howpublished = {\url{https://book.getfoundry.sh/}},
+  note         = {forge / cast / anvil 官方文档，版本锚定 2026-09}
+}
+
+@misc{anchorbook,
+  author       = {{Solana Foundation}},
+  title        = {Anchor Documentation},
+  year         = {2026},
+  howpublished = {\url{https://www.anchor-lang.com/}},
+  note         = {Solana 程序开发框架官方文档，版本锚定 2026-09}
+}
+
+@misc{suimove,
+  author       = {{Sui Foundation}},
+  title        = {Sui Documentation (Move Smart Contracts)},
+  year         = {2026},
+  howpublished = {\url{https://docs.sui.io/}},
+  note         = {Sui 的 Move 对象模型官方文档，版本锚定 2026-09}
+}

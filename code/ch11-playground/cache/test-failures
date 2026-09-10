@@ -1,0 +1,1 @@
+{"version":1,"failures":[{"contract":"test/Reentrancy.t.sol:ReentrancyPlaygroundTest","test":"test_FixedBankSurvivesSameAttack"}]}

@@ -1,0 +1,464 @@
+---
+title: "Solidity 核心"
+---
+
+## 本章要解决的问题
+
+假设你跟完了第 9 章：`forge init` 建了项目、写了测试、部署到了本地链。现在你打开任何一个真实项目的合约源码，打算照着自己改一改——然后发现两个尴尬的事实。
+
+第一，你看不懂。不是语法看不懂，而是那些函数的存在理由看不懂：为什么 `transfer` 要返回一个 `bool`？为什么授权别人的操作要拆成 `approve` 和 `transferFrom` 两笔交易？为什么几乎所有合约里都散布着 `emit` 开头的语句？
+
+第二，你打开号称"标准实现"的 OpenZeppelin 的 ERC-20 源码，发现它和教程里抄的那份长得完全不一样：多了 `_update`、多了一层 hook、多了一堆你看不出必要性的间接层。你意识到一个更根本的问题——**你一直只是在抄，不是在懂。抄来的东西，一改就错；不懂的东西，改完连错在哪都不知道。**
+
+这一章要解决的就是这个问题：把"会用模板"变成"理解每个函数为什么存在"。方法是反其道而行——**不抄模板，从零手写**。写完你再看 OpenZeppelin，那些"多余的层"会自己显现出意义。
+
+## 本章位置
+
+上一章（第 9 章）给了你工具链，这一章开始真正"造物"。本章是全书构建层的核心语言章：手写两个最重要的代币标准（ERC-20 与 ERC-721），过程中把 Solidity 语言里那些"不讲透就会出事"的部分——storage 布局、可见性、modifier、事件——一并讲清。
+
+本章产出会被后面三章直接使用：第 11 章把你写的代码当靶场研究安全，第 12 章为这里的 ERC-20 造一个完整前端，第 13 章的账户抽象将改变你调用这些函数的方式。
+
+难度标注 ◗：需要你跟过第 9 章的 Foundry 流程。概念部分所有读者可读，实验部分建议动手。
+
+## 核心理解
+
+先回答一个地基问题：代币标准到底在标准什么？
+
+我的理解是：**ERC-20 不是一份 API 文档，而是一种"合约社会"的公共语言。**链上的合约彼此陌生——你的合约和别人的合约从来没有见过面，没有人给它们做过"互相认证"。它们要协作（比如一个交易所合约要替你保管并转出你手里的代币），唯一的途径是**双方约定一套函数签名，并且都严格按照这套签名实现**。这就是标准（standard）的全部含义：签名固定、行为有约定、任何一方可以不经协调地接入。
+
+类比现实世界：集装箱运输的革命不是来自船更好，而是来自**箱子尺寸统一**——任何港口的吊机、任何国家的卡车、任何公司的仓库，不需要互相协商就能处理同一个集装箱。ERC-20 就是尺寸统一的集装箱：任何钱包、任何交易所、任何 DeFi 协议，不需要认识你的代币合约，就能处理它。
+
+在 Solidity 里承载这个约定的语法载体就是**接口（interface）**：只声明函数签名、不含实现，任何合约声明"我实现了这个接口"，就等于向全世界承诺"我按这套签名与语义行为"。你接下来手写的两个标准，都是先从接口读起——**接口是契约，实现才是你的自由度**。
+
+理解了这一点，"每个函数为什么存在"就有了统一的追问方式：**这个函数（或这个参数、这个返回值）服务于哪个协作场景？当年定标准时，那个场景遇到的技术约束是什么？**下面你会看到，很多"怪设计"的答案不在技术最优，而在历史约束——而历史约束留下的坑，直到今天还在影响每一次钱包交互。
+
+## 机制与原理
+
+### 动笔之前：四个不讲透就会出事的语言层概念
+
+手写标准之前，先把 Solidity 里四个"教程一笔带过、实战处处踩坑"的东西讲透。每个都点到为止，但必须点到。
+
+#### 1. storage 布局：状态存在哪里，是编译器决定但你可以预见的
+
+第 7 章讲过，合约的状态存在 storage（保险柜）里。这里补上关键一刀：**storage 是按 32 字节一个槽（slot）线性编号的，状态变量的存储位置由声明顺序决定。**看这个合约：
+
+```sol
+contract Vault {
+    address public admin;      // slot 0
+    uint256 public total;      // slot 1
+    mapping(address => uint256) public balances;  // slot 2（只占"名义"位置）
+    string public uri;         // slot 3（只占"名义"位置）
+}
+```
+
+前两个变量老老实实各占一个槽。但 mapping 和动态数组不同：它们的内容是任意长的，不可能塞进固定编号的槽，所以**它们的"名义槽位"只存一个占位，真正的数据藏在与名义槽位相关联、由哈希计算出的槽位里**（具体哈希公式不需要你记，需要你知道的是：mapping 不连续排列，你无法靠"加一"找到下一条记录）。补一个小细节：相邻的小类型（如一个 `uint128` 加一个 `address`）会被编译器**紧凑打包**进同一个槽——省 storage 写入的 gas，但也意味着改其中一个要读写整槽。理解到"布局是确定性的、可预见的"就够了。
+
+为什么必须懂这个？两个原因。**第一**，第 7 章实验里用 `cast storage` 读过链上槽位——你现在明白了，任何人都能按这张布局图读出你的合约状态，包括 `private` 变量（下面马上讲为什么 `private` 不保密）。**第二**，可升级合约依赖 storage 布局严格兼容——这一节最后会讲，它决定了你的一条架构路线。
+
+#### 2. 可见性：控制谁能调用，但永远控制不了谁能看
+
+Solidity 有四种函数/变量可见性（visibility），一句话讲清各自的边界：
+
+| 可见性 | 谁能调用/访问 | 典型用途 |
+|---|---|---|
+| `public` | 任何人（链上交易 + 本合约 + 子合约） | 对外接口；状态变量加 `public` 会自动生成免费 getter |
+| `external` | 只有外部调用（合约间调用、交易），本合约内部不能直接调 | 省一点 gas 的对外接口；一个函数只被外部调用时用它 |
+| `internal` | 本合约 + 继承它的合约 | 内部公共逻辑（如 `_transfer`） |
+| `private` | 仅本合约（子合约也不行） | 隐藏实现细节，**不是隐藏数据** |
+
+`private` 那行要加粗理解：**可见性控制的是"谁能调用"，永远控制不了"谁能看"。**storage 是全网公开的，`private` 变量只是编译器不生成 getter，任何人用第 7 章讲过的 `cast storage` 按布局图照样读。把密码、白名单名单之类的东西存进 `private` 变量以为是保密——这是经典的认知事故。
+
+#### 3. modifier：函数执行前的安检门
+
+modifier（修饰器）是一个"包裹函数体的前置检查"，用 `_` 标记函数体的插入位置：
+
+```sol
+modifier onlyOwner() {
+    if (msg.sender != owner) revert NotOwner(msg.sender, owner);
+    _;  // 被修饰的函数体在这里执行
+}
+
+function mint(address to, uint256 tokenId) external onlyOwner { ... }
+```
+
+调用 `mint` 时，`onlyOwner` 的检查先跑，检查不过直接 revert，函数体根本不执行。它的价值不在省代码，而在**把"谁被允许做这件事"集中到一处声明**——权限策略一眼可见，这是安全审计的第一入口（第 11 章你会反复回来找 modifier）。
+
+#### 4. 事件与 custom errors：合约的两个"对外发声"通道
+
+合约要向外界说明"发生了什么"，有两条通道，用途完全不同：
+
+**事件（event）**写进区块的日志（log）区，**不进状态、合约自己事后也读不到**，但链下任何人都能检索。它是链上状态变化与链下世界之间的桥梁：
+
+```sol
+event Transfer(address indexed from, address indexed to, uint256 value);
+
+emit Transfer(from, to, amount);
+```
+
+`indexed` 参数会被放进日志的 topic（主题）区，可以被链下高效检索——比如"检索所有发给我地址的转账"。为什么钱包和区块浏览器能实时显示你的代币余额？它们不读 storage，**它们监听事件**。这里有一个容易忽略的事实：事件本身是 ERC-20 标准的一部分——`Transfer` 和 `Approval` 两个事件与函数写在同一份接口里。这不是装饰：一个不 emit 事件的代币，钱包和浏览器就"看不见"它的转账（转账明明发生了，用户界面却毫无动静）。换句话说，**事件是标准对"合约如何向链下社会交代自己"的强制要求**。第 12 章造前端时，事件会成为你的主要数据来源，这里先立一个原则：**任何改动了状态的状态变更函数，都应当 emit 对应事件**——不改状态的函数发事件，链下 indexer 会认为"发生了什么"，链上一查却什么都没变。
+
+**custom error（自定义错误，0.8.4+ 引入）**是 revert 的结构化形式：
+
+```sol
+error InsufficientBalance(address account, uint256 needed, uint256 available);
+revert InsufficientBalance(from, value, balance);
+```
+
+对比老写法 `require(cond, "insufficient balance")`：custom error 把参数结构化地编码进回滚数据，**省 gas**（字符串常量很贵），且调用方可以按选择器**程序化区分错误类型**并分别处理。2026 年的新合约应当默认用它，本章代码全部如此。
+
+### ERC-20：先读接口，再问"为什么"
+
+现在开始主菜。第一步不是写，是把 [EIP-20](https://eips.ethereum.org/EIPS/eip-20) 的接口原文摆出来，逐个函数问"为什么"：
+
+```sol
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 value) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+}
+```
+
+逐组拆解。
+
+**元数据三件套：name / symbol / decimals。**前两个不需要解释，第三个值得停一下。`decimals` 为什么存在？因为 EVM 的世界只有整数，没有小数——链上记余额只能记 `uint256`。但人类需要"1 个代币"这种说法。约定俗成的解法是：链上以**最小单位**记账，`decimals` 记录"多少个最小单位等于 1 个代币"。主流是 18 位，即链上的 `1000000000000000000`（10^18）才显示为"1"。这带来两个实操结论：第一，Solidity 提供了字面量后缀 `1 ether`（就是 10^18 的别名）用于表示"1 个 18 位小数代币"；第二，**任何一个你见过的代币金额，都要先问 decimals 再谈大小**——18 位与 6 位（不少现实资产映射代币用 6 位）差了 12 个数量级，看错 decimals 的转账损失是永久性的。
+
+**只读层：totalSupply / balanceOf。**这两个函数的存在本身就是一种协作约定：任何外部合约要查询"你这里有多少、总共有多少"，不用知道你的内部结构。你的实现里状态存成什么样子（一个 mapping？两张表？）标准完全不关心。
+
+**transfer 为什么返回 bool？**这是标准里最有历史味道的细节之一。EIP-20 规定转账失败时**可以**返回 `false`，也可以直接 revert——两种都是"合规"的。当年的设想是：有些场景希望转账失败不回滚整笔交易（比如批量处理时跳过失败项），所以留了返回值这条软路径。但现实是：绝大多数实现选择 revert 而不是返回 `false`，而调用方如果只检查返回值、不预期 revert，就会漏掉失败。更糟的是反过来——**有的代币实现了"失败不 revert 也不返回 false"**，外层合约按 EIP-20 检查返回值时把失败当成功。这套"返回值约定与现实实现不一致"的历史包袱给 2017 年之后的若干合约事故埋过雷。给你的实操结论只有一条：**调用外部合约的返回值必须检查，且永远不能假设它一定按标准返回**——外部调用是信任边界（第 11 章展开）。
+
+### approve 与 transferFrom：一个争议了十年的设计
+
+现在到本章最重要的"为什么"。两步转账（先 `approve` 授权、后由对方 `transferFrom` 代转）的设计，是每个以太坊用户的日常，也是每次钱包弹窗里那个"无限授权"的来源。
+
+**它解决什么协作场景？**直接 `transfer` 只能由持有人自己发起。但很多场景需要**第三方代为划转**：交易所替你充提币、市场合约在你卖出时替你转出 NFT、DeFi 协议在你清算时划走抵押品。这些场景下，是"别人的合约"在发交易，它需要一种**事先获得、事后划转**的授权机制。`approve(spender, value)` 把授权关系记在状态里（`allowance` 表），`transferFrom` 凭这张表代转并扣减额度。
+
+**为什么不是一笔交易内"签名 + 转账"？**这里要诚实：这是被讨论最多的历史遗留问题。ERC-20 定稿于 2015 年 11 月，当时最直接的技术约束是：签名验证（ecrecover）在 2015 年的合约实践里还没有成熟的"用完即弃"模式，而两步设计让"授权"成为链上持久状态，后续的 `transferFrom` 无需携带任何密码学证据，实现简单、职责清晰——`approve` 管意图登记，`transferFrom` 管执行。这个设计在当时是务实的选择。
+
+**它带来了什么代价？**三个，个个你都在第 4 章见过：第一，两笔交易、两份 gas，用户体验割裂；第二，**授权滞留**——你 approve 了 100 个、对方只转走 10 个，剩下 90 个额度还躺在链上，市场惯用的"无限授权"更是把整个余额永久暴露给对方合约；第三，**竞态（race condition）**——EIP-20 的原文里专门有一段注意事项：如果你先授权 A 共 100、再改成授权 B 共 50，A 的授权在两笔交易的间隙里可以被"抢跑"（front-run）：A 看到你的新授权交易在内存池里，抢在前面把自己那 100 额度全部用掉，等你的新授权生效时，你已经损失了 100。标准自己都知道这个坑，但没有改设计——因为改设计意味着破坏已经部署的一切。
+
+**后来怎么补的？**社区沿着三个方向打补丁：一是上面看到的"无限授权不扣减"的约定（`type(uint256).max` 视为无限额度，避免扣减产生的额外竞态窗口）；二是各类 `increase/decreaseAllowance` 封装（治标）；三是根本性的替代标准——EIP-2612（permit）：把授权签名变成**离线签名、由后续交易代为提交**，一笔交易完成"授权 + 划转"，且签名不过内存池、抢跑无从谈起。2025 年又有 EIP-7674（临时授权，单笔交易内有效）作为进一步补充（截至 2026 年 9 月，两者均已被主流钱包与协议不同程度采用，但 ERC-20 的基础接口仍是存量世界的事实标准）。你今天在钱包里见过的那种"用签名代替授权确认"的交互，就是这条补丁线的产物。
+
+我的判断是：**approve 问题是理解"标准的社会性"的最佳案例。**一个 2015 年的技术折衷，因为标准一旦普及就不可更换，导致十年后全世界还在为它打补丁。合约社会的标准不是"哪个好换哪个"，而是"谁先普及谁定型"——这与你平时写软件"换个库就好"的直觉完全相反。
+
+### 从零手写 ERC-20
+
+理解了"为什么"，动手就不神秘了。完整代码在 `code/ch10-erc20/`（含测试），这里逐块过关键部分。完整接口文件 `IERC20.sol` 与上面列的一致，不再重复。
+
+状态层，整个代币的本质就三样东西：
+
+```sol
+contract MyToken is IERC20 {
+    string public constant name = "Chapter10 Token";
+    string public constant symbol = "C10";
+    uint8 public constant decimals = 18;
+
+    uint256 public totalSupply;
+    mapping(address account => uint256) private _balances;
+    mapping(address owner => mapping(address spender => uint256)) private _allowances;
+}
+```
+
+`public` 状态变量自动生成 getter，正好满足接口里那些 `external view` 的函数声明——这不是取巧，这是 Solidity 对"只读数据访问"的官方简化。`private` 的两张表则如实反映"数据不保密，只是不给 getter"。命名映射参数（0.8.18+）让嵌套的 allowance 表可读性大增。
+
+转账与铸造，注意错误处理与事件的纪律：
+
+```sol
+    function transfer(address to, uint256 value) external returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        if (to == address(0)) revert ZeroAddress();
+        uint256 balance = _balances[from];
+        if (balance < value) revert InsufficientBalance(from, value, balance);
+        _balances[from] = balance - value;
+        _balances[to] += value;
+        emit Transfer(from, to, value);
+    }
+
+    function _mint(address to, uint256 value) internal {
+        if (to == address(0)) revert ZeroAddress();
+        totalSupply += value;
+        _balances[to] += value;
+        emit Transfer(address(0), to, value);
+    }
+```
+
+三个值得停下的点。**第一**，Solidity 0.8 起算术溢出默认 revert，`balance - value` 天然安全——2018 年之前这类代码必须包一层 SafeMath 库，这是语言层吃掉的一整类漏洞（第 11 章会讲它曾经造成过什么）。**第二**，铸造的标志性记号是 `Transfer(address(0), to, value)`——零地址作为 from，这是全世界钱包与浏览器识别"铸造"的约定；同理，销毁是 `to` 为零地址。**第三**，本实现的铸币只在构造函数里发生一次：
+
+```sol
+    constructor() {
+        _mint(msg.sender, 1_000_000 ether);
+    }
+```
+
+刻意不开放后续 mint 权限。任何"合约保留铸币权"的设计都是第 4 章检查清单里的重点项——不是不能有，是**必须向用户交代清楚谁能铸、铸多少、由谁决定**。教学实现直接收窄到零，是最诚实的选择。
+
+授权部分：
+
+```sol
+    function approve(address spender, uint256 value) external returns (bool) {
+        _allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        uint256 allowed = _allowances[from][msg.sender];
+        if (allowed != type(uint256).max) {          // 无限授权视为不扣减
+            if (allowed < value) {
+                revert InsufficientAllowance(msg.sender, from, value, allowed);
+            }
+            _allowances[from][msg.sender] = allowed - value;
+        }
+        _transfer(from, to, value);
+        return true;
+    }
+```
+
+`transferFrom` 做的是"扣额度 + 转账"两件事，注意额度检查用的是授权方 `from` 与调用方 `msg.sender` 的组合——谁有额度，谁是 `msg.sender`，不可能是别人。`type(uint256).max` 不扣减是社区约定，理由在 approve 争议一节讲过了。
+
+这样，一个约 90 行、零依赖、能通过完整测试套件（含两个模糊测试）的 ERC-20 就写完了。写完它，你再看 OpenZeppelin 的实现：那些多余的 `_update` 内部函数、hook（钩子，让继承者能在转账时插入逻辑）、上下文工具，全是为了**让这份代码在被成千上万人继承改造时不碎掉**而加的工程层。它们的"多余"只对不继承它的人成立。
+
+### ERC-721：所有权模型为什么必须不同
+
+ERC-721（非同质化代币，NFT）常被当成"ERC-20 的表亲"，这个印象会误导实现。两者的根本差异在**记账主键**：
+
+- ERC-20 的主键是**地址**：`balances[address] = 数量`。每个单位的代币彼此完全等价，账本只关心"多少"。
+- ERC-721 的主键是**tokenId**：`_owners[tokenId] = address`。每一枚都全局唯一、不可分割，账本关心的是"哪一枚在谁手里"。
+
+这不是实现风格差异，是**所有权的语义差异**：前者的所有权由数量描述，后者的所有权必须由"每一枚的身份"描述。由此，ERC-721 的接口长成了另一副样子（完整版见 `code/ch10-erc721/src/IERC721.sol`）：
+
+```sol
+interface IERC721 is IERC165 {
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    function balanceOf(address owner) external view returns (uint256 balance);
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+    function transferFrom(address from, address to, uint256 tokenId) external;
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+    function approve(address to, uint256 tokenId) external;
+    function setApprovalForAll(address operator, bool approved) external;
+    function getApproved(uint256 tokenId) external view returns (address operator);
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+}
+```
+
+逐个问"为什么"：
+
+**ownerOf 与 tokenId 的全局唯一性。**`ownerOf` 对不存在的 tokenId 必须 revert——"这枚 NFT 不存在"与"这枚 NFT 属于零地址"是两件事，标准要求实现区分它们。我们的实现用"零地址 = 不存在"的哨兵值达成这一点，这也是全行业的事实约定。
+
+**为什么授权是两层（approve + setApprovalForAll）？**因为两类真实协作场景的授权粒度不同。市场合约替你挂单卖出时，只应能动**某一段的某一枚**——单枚授权（`approve`）；而你的钱包或托管代理需要批量管理你名下所有 NFT——全量授权（`setApprovalForAll`）。注意全量授权的危险性远高于单枚授权：**它是第 4 章"假空投钓鱼"最常冒充的签名**——一次 `setApprovalForAll` 给恶意地址，你名下所有 NFT 一件不剩。
+
+**safeTransferFrom 与 onERC721Received：这个函数的存在理由最值得讲。**想象一个没写接收逻辑的合约收到 ERC-20 转账——钱进了合约的余额表，虽然傻但至少还在账上。但 NFT 不一样：如果一个合约根本不知道怎么处理收到的 NFT（没有转出逻辑），NFT 进去就**永久锁死**——账本写着它在合约手里，而合约谁也指挥不动。于是 EIP-721 设计了"先问后转"：接收方是合约时，转账前先调用它的 `onERC721Received` 回调，**对方必须返回一个特定的四字节选择器**表示"我知道如何保管 NFT"。回答不上来，转账 revert：
+
+```sol
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data)
+        public
+    {
+        transferFrom(from, to, tokenId);
+        if (to.code.length > 0) {   // 接收方是合约才需要"问"
+            (bool ok, bytes memory ret) = to.call(
+                abi.encodeWithSelector(
+                    IERC721Receiver.onERC721Received.selector, msg.sender, from, tokenId, data
+                )
+            );
+            if (!ok || ret.length != 32
+                    || abi.decode(ret, (bytes4)) != IERC721Receiver.onERC721Received.selector) {
+                revert TransferToNonReceiver(to);
+            }
+        }
+    }
+```
+
+顺带注意 `to.code.length > 0` 这个判断——合约和 EOA 的区别在字节码层面就是"有没有 code"。这也回答了一个第 7 章留下的尾巴：EOA 收 NFT 为什么从来不需要确认？因为它没有代码，"问都懒得问"。
+
+**ERC-165 与 supportsInterface：合约怎么"互相认识"。**上面这套"先问后转"暴露了一个更普遍的问题：**合约 A 怎么知道合约 B 支持哪些接口？**直接猜是危险的（猜错了调用会打到意外函数上）。EIP-165 的答案朴素得出奇：规定一个函数，问"你支持接口 X 吗"，支持就返回 true。每个接口有一个由其全部函数选择器异或出来的四字节 ID，支持声明的实现长这样：
+
+```sol
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC165).interfaceId          // 0x01ffc9a7
+            || interfaceId == type(IERC721).interfaceId          // 0x80ac58cd
+            || interfaceId == type(IERC721Metadata).interfaceId; // 0x5b5e139f
+    }
+```
+
+这是链上"接口发现"的最小方案。市场合约正是靠它判断你的 NFT 是不是 ERC-721。
+
+**mint 为什么不在标准里？**ERC-721 标准刻意不管铸造——谁有资格铸、铸多少，每个 NFT 的玩法不同。这是**自由度，也是风险面**：mint 权限正是第 4 章 Rug Pull 检查清单的第一项。我们的实现用 modifier 演示最简单的收窄：
+
+```sol
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotTokenOwner(msg.sender, owner);
+        _;
+    }
+
+    function mint(address to, uint256 tokenId) external onlyOwner { ... }
+```
+
+真实项目的铸造权限通常交给多签或治理合约——无论给谁，它都必须是公开可查的。
+
+**tokenURI 与元数据的归宿。**ERC-721 的元数据扩展（IERC721Metadata）规定了一个 `tokenURI(tokenId)` 函数，返回"这枚 NFT 的说明书在哪里"。注意措辞：返回的是一个**指针**（通常是 URL），而不是内容本身——名称、图片、属性这些内容放在链下（IPFS 或普通服务器），链上只存指向它的引用。这再次呼应第 4 章的观点："链上只存发生了什么"。它也直接解释了一类真实风险：如果指针指向的是一个随时会关掉的普通服务器，项目方跑路那天，你链上的 NFT 还在，但它指向的"内容"消失了——**你拥有所有权凭证，却可能失去凭证所指之物**。所以第 4 章的检查清单里有一条"元数据存在哪、谁控制它"，机制根源就在这里。
+
+### 合约间调用：interface 与 call
+
+手写两个标准的过程，你已经反复见到合约间调用的两种形态。这里收拢一下：
+
+**接口调用（高内聚）**：`IERC20(token).transfer(to, amount)`——编译期检查签名，可读性最好，但**调用失败会直接 revert 整笔交易**，你失去了"失败了换个方式处理"的余地。另外要警惕一个更隐蔽的坑：接口调用打到**不存在**的函数上时，如果对面的合约有 fallback（回退函数），调用不会失败、而是静默"成功"——返回值检查是你的最后一道防线。
+
+**低级 call（低层级）**：`(bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(...))`——**不 revert，只返回成败与原始返回数据**，成败由你处理。`onERC721Received` 的实现里我们用了它，因为你需要在"对方是恶意合约"的前提下自己掌控失败路径。它的代价是失去了编译期的类型保护：选择器拼错、参数编码错位，编译器一概不管，错到运行时才暴露。
+
+两条铁律：**低级 call 的返回值必须检查**（忽略 `ok` 是真实事故的常见来源）；**外部调用永远是信任边界**——你对面的合约可能做任何事，包括反过来调用你（这就是第 11 章重入攻击的入口，此处埋下伏笔）。
+
+### 可升级性：三条路的取舍判断
+
+最后回答一个你迟早会问的问题：合约部署即定型，那如果我部署后发现要改逻辑怎么办？
+
+只讲判断，不讲实现（代理合约的 delegatecall 细节超出本书剪刀边界，知道概念即可）。三条路：
+
+| 路线 | 做法 | 代价 |
+|---|---|---|
+| 不可变（immutable） | 部署即终局；要改就发新合约，写迁移合约把旧状态搬过去 | 用户资产要跟着迁移，社区信任成本高；但信任面最小——**代码永远骗不了人，因为它永远不变** |
+| 代理可升级（proxy） | 用户交互的入口合约（proxy）通过 delegatecall 把逻辑外包给可替换的实现合约 | 可打补丁、可迭代；但"可升级"同时意味着**运营方保留了改规则的权力**——DeFi 里大量事故恰恰发生在升级权限失控或升级引入新逻辑缺陷 |
+| 权限内升级 | 不换合约，但把关键参数（费率、白名单、暂停开关）做成受治理控制的变量 | 折衷：逻辑定型、参数可调；适合规则稳定、仅需微调的场景 |
+
+选择判断只有一句话：**"可升级"不是免费的安全带，它是一场信任的转移——从"代码本身可信"转移到"掌握升级权的人可信"。**面向陌生人资金的开源协议，2026 年的普遍共识是：核心逻辑不可变 + 参数受多签/治理控制 + 升级路径以时间锁（timelock，升级生效前公开延迟一段时间）约束，且升级权限的归属必须向用户显性交代。哪些协议实际怎么选，第 8 章的 Stage 框架给了你现成的核查入口。
+
+另外一个与可升级性直接相关的技术点，对应开头讲的 storage 布局：代理路线要求实现合约的 storage 布局**只能追加、不能改序**——在中间插一个新状态变量，会让旧数据"错位"读到新变量上。这就是为什么严肃项目都把 storage 布局当公开接口来管理。
+
+## 动手实验：手写 → 测试 → 部署
+
+实验环境：第 9 章装好的 Foundry，全程本地，零真实资金。两个项目的完整代码在 `code/ch10-erc20/` 与 `code/ch10-erc721/`（含 README 与运行说明）。
+
+**第一步：建立项目并放入手写实现。**
+
+```bash
+forge init ch10-erc20 && cd ch10-erc20
+forge install foundry-rs/forge-std   # 测试标准库，仅 test/ 使用
+# 将本书 code/ch10-erc20/ 下的 src/、test/、foundry.toml
+# 替换 forge init 的生成物
+forge build
+```
+
+`forge build` 应零错误零警告。如果编译器提示找不到 forge-std，确认第 2 步的 install 在项目目录内执行过。
+
+**第二步：跑完整测试套件。**
+
+```bash
+forge test -vv
+```
+
+预期看到形如这样的输出（具体 gas 数字每次不同，PASS 数量为 11：9 个单元测试 + 2 个模糊测试）：
+
+```text
+Running 11 tests for test/MyToken.t.sol:MyTokenTest
+[PASS] test_ApproveSetsAllowanceAndEmits() (gas: 54872)
+[PASS] test_ConstructorMintsDeployer() (gas: 9123)
+[PASS] test_TransferMovesBalanceAndEmitsEvent() (gas: 65210)
+[PASS] test_TransferRevertsOnInsufficientBalance() (gas: 21543)
+[PASS] test_TransferRevertsOnZeroAddress() (gas: 20971)
+[PASS] test_TransferFromUsesAllowance() (gas: 78453)
+[PASS] test_TransferFromRevertsOnInsufficientAllowance() (gas: 25310)
+[PASS] test_TransferFromUnlimitedAllowanceNotDecremented() (gas: 61902)
+[PASS] testFuzz_ApproveThenTransferFrom(uint256,uint256) (runs: 256, ...):
+[PASS] testFuzz_TransferPreservesTotalSupply(uint256) (runs: 256, ...):
+Suite result: ok. 11 passed; 0 failed; 0 skipped
+```
+
+注意最后两个 `testFuzz_` 开头的测试：随机生成 256 组金额输入验证"转账总量守恒"与"额度扣减正确"——这是第 9 章 fuzzing 概念的第一次实战。
+
+ERC-721 项目同理：`forge init ch10-erc721` 后替换文件，`forge test -vv` 应通过 12 个测试。重点看 `test_SafeTransferToBadReceiverReverts`——坏接收方合约收不到 NFT，资产没有被锁死，这就是 `safeTransferFrom` 的价值被测试钉住的瞬间。
+
+**第三步：部署到本地链，亲手走一遍两步转账。**
+
+```bash
+# 终端 1：启动本地链
+anvil
+# 记下输出的第一个账户地址与私钥（测试链专用，全网公开的默认测试密钥）
+```
+
+```bash
+# 终端 2：部署
+forge create src/MyToken.sol:MyToken \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+# 输出末尾的 Deployed to: 0x... 记为 $TOKEN
+
+# 查部署者余额（应为 100 万 token 的最小单位数）
+cast call $TOKEN "balanceOf(address)(uint256)" \
+  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --rpc-url http://127.0.0.1:8545
+# 预期输出：1000000000000000000000000
+
+# 直接转账 1 个 token 给第二个测试账户
+cast send $TOKEN "transfer(address,uint256)" \
+  0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
+  1000000000000000000 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --rpc-url http://127.0.0.1:8545
+
+# 走一遍 approve → transferFrom 两步转账（第三个账户代转）
+cast send $TOKEN "approve(address,uint256)" \
+  0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 5000000000000000000 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --rpc-url http://127.0.0.1:8545
+
+cast send $TOKEN "transferFrom(address,address,uint256)" \
+  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+  0x90F79bf6EB2c4f870365E785982E1f101E93b906 2000000000000000000 \
+  --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
+  --rpc-url http://127.0.0.1:8545
+
+# 验证：代转人替你转走了 2 个 token，剩余授权额度应为 3
+cast call $TOKEN "allowance(address,address)(uint256)" \
+  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+  0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC --rpc-url http://127.0.0.1:8545
+# 预期输出：3000000000000000000
+```
+
+你在第 4 章"模拟钓鱼授权"实验里见过 approve 的另一面；这次是从合约作者的角度亲手实现它。同一个函数，两种角色，机制完全一致。
+
+## 常见误区或边界
+
+**误区一：private 变量是保密的。**可见性只控制调用权，不控制读取权。storage 公开可查，真正需要保密的数据根本不该上链（第 1 章边界重申过的隐私问题）。
+
+**误区二：approve 之后忘了 transferFrom 也"没损失"。**有损失——**授权滞留**。approve 的额度不会自动过期，对方合约任何时候都能行使。无限授权 + 遗留授权 = 长期敞口。定期清理授权是链上卫生习惯（第 4 章工具清单）。
+
+**误区三：返回值可以不检查。**低级 call 和部分外部调用的失败是"静默"的，不检查返回值，失败会被当成功继续执行——本书第 11 章的漏洞谱系里有它一席之地。
+
+**误区四：能编译 = 正确。**编译器替你挡住的是算术溢出和语法错误，挡不住逻辑错误、权限设计和调用时序问题。测试是下限，不是上限——这个话题的整个下半场在第 11 章。
+
+**边界一：本章不是 Solidity 语言大全。**继承、库、汇编（Yul）、gas 优化、payable 与 receive/fallback 的完整语义，都没有展开；这里只讲手写标准所必需的骨架。语言全集请以[官方文档](https://docs.soliditylang.org)为准（2026-09 版本线为 0.8.x）。
+
+**边界二：本章的实现是教学版，不是生产模板。**生产实现需要考虑 unchecked 优化、hook 扩展点、元数据升级路径等工程层。理解优先，复用 OpenZeppelin 等经审计实现才是生产正道——但现在你抄的是懂了的东西。
+
+**边界三：可升级性只到了取舍判断层。**代理模式的 delegatecall 转发、存储碰撞、初始化陷阱等实现细节是专门的进阶话题，本书刻意不展开。
+
+## 本章产物
+
+读完并做完实验，你应当拥有：
+
+1. **两个通过测试的手写标准实现**：`code/ch10-erc20/`（11 个测试）与 `code/ch10-erc721/`（12 个测试），部署到本地链并亲手完成过两步转账。
+2. **一张"标准函数 × 存在理由"对照表**（写在你自己的笔记里）：ERC-20 的 9 个函数、ERC-721 的 9 个函数，每个都能用一句话回答"它服务于哪个协作场景"。
+3. **approve 争议的完整因果链**：两步设计的来历 → 授权滞留与无限授权 → 竞态抢跑 → permit/临时授权的补丁线。这是理解"标准的社会性"的标本。
+4. **一个可升级性判断框架**：不可变 / 代理 / 参数化三条路线，及"升级权 = 信任转移"的判断句式。
+
+## 本章在体系中的位置
+
+第 9 章给了你工具链，本章给了你第一批真正属于你的链上代码——而且每一行你都说得出存在的理由。但请回头看你刚写的 `_transfer`：它先改状态、再没有外部调用，很安全；而你在 `safeTransferFrom` 里亲手写下的那句 `to.call(...)`，把控制流交给了对面一个你一无所知的合约。**外部调用是信任边界——这句话的完整后果，是下一章的全部主题。**第 11 章会把你刚写的代码变成靶场：先攻击它、再修复它，并且回答那个更冷峻的问题——为什么部署之后，错误再也无法"打补丁"挽回已经发生的损失。
+
+## 边界重申
+
+本章教你的是"标准的每个函数为什么存在"，不是"Solidity 全量语法"，也不是"代币经济学"：decimals 设多少、总量多少、mint 规则怎么设计，本书只给机制与风险面，不给任何设计建议——那超出技术中立的范围。同样，本章不涉及 gas 数字的对比评测、不同链上 EVM 变体的方言差异（第 15 章会从编程模型层面讨论非 EVM 的世界）。代码的版本锚点是 Solidity 0.8.x 与 2026 年 9 月的工具链；两年后你重读时，请以官方文档核对版本差异。

@@ -1,0 +1,3 @@
+{
+  "note": "占位文件：运行 node scripts/deploy.mjs 后会被覆盖为本次部署的三合约地址"
+}

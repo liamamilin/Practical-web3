@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+auto_detect_solc = true
+# 提示：EntryPoint 与 SimpleAccountFactory 不在本项目里重新编译，
+# 直接使用官方 npm 包 @account-abstraction/contracts 的预编译产物（见 README）。

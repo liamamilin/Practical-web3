@@ -1,0 +1,21 @@
+[package]
+name = "ch15-anchor"
+version = "0.1.0"
+description = "Web3 基石第 15 章示例：最小 Anchor 计数器程序"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ch15_anchor"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+# Anchor 1.2+ 要求：IDL 生成需要该特性
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "1.2.0"

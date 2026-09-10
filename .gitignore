@@ -1,0 +1,25 @@
+# 构建产物（由 GitHub Actions 构建）
+_book/
+.quarto/
+
+# 写作过程文档（不入库）
+content.md
+book-principles.md
+writing-state.md
+
+# 本地工具链缓存与敏感文件（含测试钱包私钥，严禁提交）
+.tools/
+
+# IDE 与系统文件
+.Rproj.user/
+.Rhistory
+.RData
+.DS_Store
+
+# 代码项目的构建产物与依赖
+node_modules/
+dist/
+target/
+test-ledger*/
+.sol/
+.build/

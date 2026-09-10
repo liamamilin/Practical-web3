@@ -1,0 +1,24 @@
+{
+  "name": "ch12-dapp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Web3 基石第 12 章：React + wagmi + viem 为第 10 章 ERC-20 做的完整前端（本地 Anvil）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "viem": "^2.56.3",
+    "wagmi": "^3.7.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.2.2"
+  }
+}

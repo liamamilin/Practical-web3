@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>Crowdfund — 最小前端</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    button { margin: 0.25rem 0.5rem 0.5rem 0; padding: 0.4rem 0.9rem; }
+    input { width: 10rem; padding: 0.35rem; margin-right: 0.5rem; }
+    dl { display: grid; grid-template-columns: 10rem 1fr; row-gap: 0.3rem; }
+    dt { color: #666; }
+    #log { margin-top: 1.5rem; padding: 0.75rem; background: #f6f6f6; white-space: pre-wrap; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>带治理的众筹（教学版）</h1>
+
+  <p>
+    <label>合约地址 <input id="address" placeholder="0x..." /></label>
+    <button id="connect">读取</button>
+    <button id="wallet">连接钱包</button>
+  </p>
+
+  <dl id="state">
+    <dt>阶段</dt><dd id="phase">-</dd>
+    <dt>目标 / 已募</dt><dd id="raised">-</dd>
+    <dt>我的出资</dt><dd id="mine">-</dd>
+    <dt>可支配资金</dt><dd id="available">-</dd>
+  </dl>
+
+  <h3>操作</h3>
+  <p>
+    <input id="amount" placeholder="出资额(ETH)" />
+    <button id="contribute">出资</button>
+    <button id="refund">退款</button>
+  </p>
+  <p>
+    <label>提案 ID <input id="proposalId" placeholder="0" style="width:4rem" /></label>
+    <button id="voteFor">投赞成</button>
+    <button id="voteAgainst">投反对</button>
+    <button id="execute">执行</button>
+  </p>
+
+  <div id="log">日志</div>
+
+  <!-- viem 通过 CDN 引入，避免本实验引入构建工具链 -->
+  <script type="module">
+    import { createPublicClient, createWalletClient, custom, http, formatEther, parseEther } from "https://esm.sh/viem@2";
+
+    const PHASES = ["Active（募集中）", "Funded（治理中）", "Refunding（退款中）"];
+    const ABI = [
+      "function phase() view returns (uint8)",
+      "function totalRaised() view returns (uint256)",
+      "function goal() view returns (uint256)",
+      "function contributions(address) view returns (uint256)",
+      "function availableForProposals() view returns (uint256)",
+      "function deadline() view returns (uint64)",
+      "function contribute() payable",
+      "function refund()",
+      "function vote(uint256,bool)",
+      "function execute(uint256)",
+    ];
+
+    let address = "";
+    let publicClient, walletClient, account;
+
+    const $ = (id) => document.getElementById(id);
+    const log = (msg) => ($("log").textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + $("log").textContent);
+
+    function clients() {
+      publicClient = createPublicClient({ transport: http("http://localhost:8545") });
+    }
+
+    async function readState() {
+      clients();
+      const [phase, total, goal, available] = await Promise.all([
+        publicClient.readContract({ address, abi: [ABI[0]], functionName: "phase" }),
+        publicClient.readContract({ address, abi: [ABI[1]], functionName: "totalRaised" }),
+        publicClient.readContract({ address, abi: [ABI[2]], functionName: "goal" }),
+        publicClient.readContract({ address, abi: [ABI[4]], functionName: "availableForProposals" }),
+      ]);
+      $("phase").textContent = PHASES[phase];
+      $("raised").textContent = `${formatEther(total)} / ${formatEther(goal)} ETH`;
+      $("available").textContent = `${formatEther(available)} ETH`;
+      if (account) {
+        const mine = await publicClient.readContract({ address, abi: [ABI[3]], functionName: "contributions", args: [account] });
+        $("mine").textContent = `${formatEther(mine)} ETH`;
+      }
+    }
+
+    async function write(fnName, args = [], value = undefined) {
+      const hash = await walletClient.writeContract({
+        address, abi: ABI, functionName: fnName, args, value, account,
+      });
+      log(`交易已发送：${hash}`);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      log(`交易确认，status = ${receipt.status}`);
+      await readState();
+    }
+
+    async function ensureWallet() {
+      if (!window.ethereum) { log("未检测到浏览器钱包"); throw new Error("no wallet"); }
+      walletClient = createWalletClient({ transport: custom(window.ethereum) });
+      [account] = await walletClient.requestAddresses();
+      log(`钱包已连接：${account}`);
+    }
+
+    $("wallet").onclick = ensureWallet;
+    $("connect").onclick = async () => {
+      address = $("address").value.trim();
+      if (!address.startsWith("0x")) { log("请先填入合约地址"); return; }
+      try { await readState(); log("状态读取成功"); } catch (e) { log("读取失败：" + e.message); }
+    };
+    $("contribute").onclick = async () => {
+      try {
+        await ensureWallet();
+        await write("contribute", [], parseEther($("amount").value || "0.1"));
+      } catch (e) { log("出资失败：" + e.message); }
+    };
+    $("refund").onclick = async () => {
+      try { await ensureWallet(); await write("refund"); }
+      catch (e) { log("退款失败：" + e.message); }
+    };
+    $("voteFor").onclick = async () => {
+      try { await ensureWallet(); await write("vote", [BigInt($("proposalId").value || 0), true]); }
+      catch (e) { log("投票失败：" + e.message); }
+    };
+    $("voteAgainst").onclick = async () => {
+      try { await ensureWallet(); await write("vote", [BigInt($("proposalId").value || 0), false]); }
+      catch (e) { log("投票失败：" + e.message); }
+    };
+    $("execute").onclick = async () => {
+      try { await ensureWallet(); await write("execute", [BigInt($("proposalId").value || 0)]); }
+      catch (e) { log("执行失败：" + e.message); }
+    };
+  </script>
+</body>
+</html>
